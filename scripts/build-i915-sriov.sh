@@ -18,6 +18,9 @@ mkdir -p "${OUT_DIR}"
 echo "[1/6] 获取 TrueNAS 内核 ${TRUENAS_REF}"
 git clone --depth 1 --branch "${TRUENAS_REF}" \
   https://github.com/truenas/linux.git "${KERNEL_DIR}"
+KERNEL_COMMIT="$(git -C "${KERNEL_DIR}" rev-parse HEAD)"
+# TrueNAS 官方构建会在配置前删除 Git 元数据，避免 kernelrelease 自动追加 -g<提交号>。
+rm -rf "${KERNEL_DIR}/.git"
 
 echo "[2/6] 生成与 TrueNAS production 一致的内核配置"
 cd "${KERNEL_DIR}"
@@ -28,6 +31,9 @@ make defconfig
   scripts/package/truenas/debian_amd64.config \
   scripts/package/truenas/truenas.config \
   scripts/package/truenas/tn-production.config
+# 显式固定发行版后缀；同时关闭 SCM 自动后缀，防止 runner 环境影响产物版本。
+./scripts/config --set-str LOCALVERSION "+truenas"
+./scripts/config --disable LOCALVERSION_AUTO
 make olddefconfig
 
 ACTUAL_KERNEL="$(make -s kernelrelease)"
@@ -70,7 +76,7 @@ fi
   echo "TrueNAS ref: ${TRUENAS_REF}"
   echo "Target kernel: ${TARGET_KERNEL}"
   echo "i915 SR-IOV ref: ${I915_REF}"
-  echo "TrueNAS commit: $(git -C "${KERNEL_DIR}" rev-parse HEAD)"
+  echo "TrueNAS commit: ${KERNEL_COMMIT}"
   echo "i915 commit: $(git -C "${DRIVER_DIR}" rev-parse HEAD)"
   echo
   find "${OUT_DIR}" -type f -name '*.ko' -print0 | while IFS= read -r -d '' module; do
