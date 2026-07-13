@@ -1,0 +1,11 @@
+{
+  "version": "2.0",
+  "project_path": "D:\\桌面\\Truenas-i915-SR-IOV",
+  "entries": [],
+  "last_dedup_at": "2026-07-13T15:43:04.145947100Z",
+  "config": {
+    "similarity_threshold": 0.7,
+    "dedup_on_startup": true,
+    "enable_dedup": true
+  }
+}
