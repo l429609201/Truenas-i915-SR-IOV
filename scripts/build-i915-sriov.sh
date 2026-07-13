@@ -25,16 +25,22 @@ rm -rf "${KERNEL_DIR}/.git"
 echo "[2/6] 生成与 TrueNAS production 一致的内核配置"
 cd "${KERNEL_DIR}"
 export EXTRAVERSION=-production
+export LOCALVERSION=+truenas
 export CC="${KERNEL_CC:-gcc}"
 make defconfig
 ./scripts/kconfig/merge_config.sh .config \
   scripts/package/truenas/debian_amd64.config \
   scripts/package/truenas/truenas.config \
   scripts/package/truenas/tn-production.config
-# 显式固定发行版后缀；同时关闭 SCM 自动后缀，防止 runner 环境影响产物版本。
-./scripts/config --set-str LOCALVERSION "+truenas"
+# 后缀只由 make 级 LOCALVERSION 提供；Kconfig 中清空，避免生成 +truenas+truenas。
+./scripts/config --set-str LOCALVERSION ""
 ./scripts/config --disable LOCALVERSION_AUTO
 make olddefconfig
+make syncconfig
+
+echo "最终版本配置："
+grep -E '^CONFIG_LOCALVERSION=|^CONFIG_LOCALVERSION_AUTO=' .config include/config/auto.conf || true
+echo "make LOCALVERSION=${LOCALVERSION} EXTRAVERSION=${EXTRAVERSION}"
 
 ACTUAL_KERNEL="$(make -s kernelrelease)"
 if [[ "${ACTUAL_KERNEL}" != "${TARGET_KERNEL}" ]]; then
