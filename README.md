@@ -28,62 +28,106 @@ uname -r
 
 完整内核符号构建比较耗时，这是为了在启用 `CONFIG_MODVERSIONS` 时生成正确的 `Module.symvers`，而不是仅靠不完整的 `modules_prepare`。
 
-## 上传到 TrueNAS 后验证
+## 部署到 TrueNAS
 
-假设模块解压到 `/mnt/Sys/Tool/modules/i915-sriov/`：
+将两个模块和两个脚本统一放到持久化数据集目录 `/mnt/tools`：
+
+```text
+/mnt/tools/
+├── i915.ko
+├── intel_sriov_compat.ko
+├── test-i915-sriov.sh
+└── enable-i915-sriov.sh
+```
+
+处理 Windows 换行并添加执行权限：
+
+```bash
+sed -i 's/\r$//' /mnt/tools/test-i915-sriov.sh /mnt/tools/enable-i915-sriov.sh
+chmod 755 /mnt/tools/test-i915-sriov.sh /mnt/tools/enable-i915-sriov.sh
+```
+
+检查运行内核和模块版本：
 
 ```bash
 uname -r
-find /mnt/Sys/Tool/modules/i915-sriov -name '*.ko' -exec modinfo {} \; | grep -E 'filename|depends|vermagic'
+modinfo -F vermagic /mnt/tools/i915.ko
+modinfo -F vermagic /mnt/tools/intel_sriov_compat.ko
 ```
 
-所有待加载模块的 `vermagic` 都应包含：
+两个模块的 `vermagic` 开头必须与 `uname -r` 完全一致。脚本通过 `/proc/modules` 判断模块状态，避免 `pipefail` 与 `grep -q` 组合造成误判。
+
+## 首次安全测试
+
+不要直接添加开机脚本。先停止使用核显的 Apps、容器、转码服务和虚拟机，并检查 `/dev/dri`：
+
+```bash
+fuser -v /dev/dri/* 2>/dev/null
+```
+
+没有进程占用后，以 root 执行自动恢复测试：
+
+```bash
+KEEP_LOADED=0 bash /mnt/tools/test-i915-sriov.sh
+```
+
+测试脚本会检查模块版本和设备占用，加载兼容层与自定义 i915，创建 1 个 VF，并验证 `enable_guc=3`、`max_vfs=7` 和 `virtfn0`。`KEEP_LOADED=0` 表示测试结束后尝试恢复系统驱动；任何情况下都不要使用 `rmmod -f i915`。
+
+成功证据包括：
 
 ```text
-6.12.91-production+truenas
+Running in SR-IOV PF mode
+Running in SR-IOV VF mode
+Enabled 1 VFs
+VF 创建成功
 ```
 
-## 首次手工测试
+## 配置 TrueNAS 开机启动
 
-不要直接添加开机脚本。先停止使用核显的容器、应用和虚拟机，然后在本地控制台测试：
+实机测试发现 Post Init 阶段系统 i915 已绑定核显 PF。`enable-i915-sriov.sh` 会先通过 PCI `unbind` 安全释放 PF，再替换模块并重新绑定，不使用强制卸载。
+
+进入 **系统设置 → 高级设置 → 开机/关机脚本 → 添加**：
+
+| 项目 | 设置 |
+|---|---|
+| 类型 | 命令（Command） |
+| 什么时候 | 初始化后期（Post Init） |
+| 超时 | 120 秒 |
+| 启用 | 是 |
+| 描述 | 启用 Intel i915 SR-IOV |
+
+创建 7 个 VF 的命令必须填写为一整行：
 
 ```bash
-MODULE_DIR=/mnt/Sys/Tool/modules/i915-sriov
-I915_KO=$(find "$MODULE_DIR" -name i915.ko -print -quit)
-COMPAT_KO=$(find "$MODULE_DIR" -name intel_sriov_compat.ko -print -quit)
-
-rmmod i915
-[ -z "$COMPAT_KO" ] || insmod "$COMPAT_KO"
-insmod "$I915_KO" enable_guc=3 max_vfs=7
-echo 1 > /sys/bus/pci/devices/0000:00:02.0/sriov_numvfs
-
-lspci -nn | grep -E 'VGA|Display'
-dmesg | tail -n 100
+/bin/sh -c 'MODULE_DIR=/mnt/tools PCI_DEVICE=0000:00:02.0 VF_COUNT=7 MAX_VFS=7 ENABLE_GUC=3 /bin/sh /mnt/tools/enable-i915-sriov.sh > /mnt/tools/i915-sriov-boot.log 2>&1'
 ```
 
-`echo 1` 表示创建一个 VF；确认稳定后可改为 `1` 到 `7`。如果 `rmmod i915` 提示模块正在使用，应先找出占用者，不要强制卸载。
+使用单个 `>` 覆盖旧日志，避免上次失败记录与本次结果混合。第一次启动可将 `VF_COUNT=7` 改为 `VF_COUNT=1`，确认稳定后再增加。不能选择“初始化前期”，因为该阶段 `/mnt/tools` 所在数据集可能尚未挂载。
 
-## 配置 TrueNAS 开机脚本
-
-手工测试成功后，将项目中的 `truenas/enable-i915-sriov.sh` 复制到数据集，例如：
+## 重启后验证
 
 ```bash
-cp enable-i915-sriov.sh /mnt/Sys/Tool/modules/enable-i915-sriov.sh
-chmod +x /mnt/Sys/Tool/modules/enable-i915-sriov.sh
+cat /mnt/tools/i915-sriov-boot.log
+lsmod | grep -E '^(i915|intel_sriov_compat)'
+printf 'enable_guc='; cat /sys/module/i915/parameters/enable_guc
+printf 'max_vfs='; cat /sys/module/i915/parameters/max_vfs
+printf 'total_vfs='; cat /sys/bus/pci/devices/0000:00:02.0/sriov_totalvfs
+printf 'num_vfs='; cat /sys/bus/pci/devices/0000:00:02.0/sriov_numvfs
+lspci -Dnn | grep '0000:00:02'
+dmesg | grep -Ei 'i915|sriov|guc|huc' | tail -n 100
 ```
 
-进入 **系统 → 高级设置 → 开机/关机脚本**，添加 **Post Init / 启动后执行**：
+创建 7 个 VF 时，预期参数为 `enable_guc=3`、`max_vfs=7`、`total_vfs=7`、`num_vfs=7`，并枚举 PF `0000:00:02.0` 与 VF `0000:00:02.1`～`0000:00:02.7`。
 
-```bash
-/mnt/Sys/Tool/modules/enable-i915-sriov.sh
-```
+已在以下环境完成实机验证：
 
-脚本默认从 `/mnt/Sys/Tool/modules/i915-sriov` 加载模块并创建 1 个 VF。需要修改时可通过环境变量调用：
+- TrueNAS SCALE 25.10.4；
+- 内核 `6.12.91-production+truenas`；
+- Intel Alder Lake-S GT1 UHD Graphics 730，设备 ID `8086:4692`；
+- 成功创建 7 个 VF；
+- GuC submission、HuC authentication 和 SR-IOV PF/VF 模式正常。
 
-```bash
-MODULE_DIR=/mnt/其他路径 VF_COUNT=2 PCI_DEVICE=0000:00:02.0 \
-  /mnt/Sys/Tool/modules/enable-i915-sriov.sh
-```
+若启动失败，先查看 `/mnt/tools/i915-sriov-boot.log` 和 `dmesg`。禁用 Post Init 任务并重启即可恢复系统默认启动流程，不要强制卸载正在使用的 i915。
 
 ## 分配给 Incus VM
 

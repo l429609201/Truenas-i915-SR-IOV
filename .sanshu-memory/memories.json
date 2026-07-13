@@ -1,7 +1,16 @@
 {
   "version": "2.0",
   "project_path": "D:\\桌面\\Truenas-i915-SR-IOV",
-  "entries": [],
+  "entries": [
+    {
+      "id": "90c78bde-dcc0-49cd-aff4-4b179842d678",
+      "content": "所有关键提问、方案确认和完成确认必须通过 zhi 展示；涉及页面美化、UI 描述、设计系统或 UI 审查时优先使用 uiux；需要实时搜索信息时使用 tavily。",
+      "content_normalized": "所有关键提问方案确认和完成确认必须通过 zhi 展示涉及页面美化ui 描述设计系统或 ui 审查时优先使用 uiux需要实时搜索信息时使用 tavily",
+      "category": "Preference",
+      "created_at": "2026-07-13T22:19:32.467180300Z",
+      "updated_at": "2026-07-13T22:19:32.467180300Z"
+    }
+  ],
   "last_dedup_at": "2026-07-13T15:43:04.145947100Z",
   "config": {
     "similarity_threshold": 0.7,

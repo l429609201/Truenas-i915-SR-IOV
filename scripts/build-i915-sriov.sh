@@ -116,7 +116,8 @@ package_modules() {
       echo
     done
   } > "${OUT_DIR}/BUILD-INFO.txt"
-  find "${OUT_DIR}" -name '*.ko' -exec sha256sum '{}' \; > "${OUT_DIR}/SHA256SUMS"
+  # 使用相对路径记录哈希，确保下载到独立 verify Job 后仍可复核。
+  (cd "${OUT_DIR}" && find . -name '*.ko' -exec sha256sum '{}' \;) > "${OUT_DIR}/SHA256SUMS"
 
   FAILED=0
   while IFS= read -r -d '' module; do

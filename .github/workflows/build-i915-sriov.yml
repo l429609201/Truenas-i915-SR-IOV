@@ -20,32 +20,50 @@ permissions:
   contents: read
 
 jobs:
+  prepare:
+    name: ① 校验构建参数
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 校验 TrueNAS 与 i915 上游引用
+        env:
+          TRUENAS_REF: ${{ inputs.truenas_ref }}
+          I915_REF: ${{ inputs.i915_ref }}
+          TARGET_KERNEL: ${{ inputs.target_kernel }}
+        run: |
+          set -euo pipefail
+          git ls-remote --exit-code https://github.com/truenas/linux.git "$TRUENAS_REF" \
+            "refs/heads/$TRUENAS_REF" "refs/tags/$TRUENAS_REF" >/dev/null
+          git ls-remote --exit-code https://github.com/strongtz/i915-sriov-dkms.git "$I915_REF" \
+            "refs/heads/$I915_REF" "refs/tags/$I915_REF" >/dev/null
+          [[ "$TARGET_KERNEL" == *-production+truenas ]]
+          echo "TrueNAS: $TRUENAS_REF"
+          echo "i915 SR-IOV: $I915_REF"
+          echo "目标内核: $TARGET_KERNEL"
+
   build:
+    name: ② 构建内核与 SR-IOV 模块
+    needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
       TRUENAS_REF: ${{ inputs.truenas_ref }}
       TARGET_KERNEL: ${{ inputs.target_kernel }}
       I915_REF: ${{ inputs.i915_ref }}
-
     steps:
       - name: 检出构建配置
         uses: actions/checkout@v4
 
-      - name: 安装构建依赖
+      - name: 安装依赖并释放磁盘
         run: |
           sudo apt-get update
-          # 优先使用 GCC 14；若 Ubuntu 镜像暂未提供，则退回其默认 GCC。
           if apt-cache show gcc-14 >/dev/null 2>&1; then
             sudo apt-get install -y gcc-14
             echo "KERNEL_CC=gcc-14" >> "$GITHUB_ENV"
           else
             echo "KERNEL_CC=gcc" >> "$GITHUB_ENV"
           fi
-          sudo apt-get install -y \
-            bc bison build-essential cpio dwarves flex git kmod \
+          sudo apt-get install -y bc bison build-essential cpio dwarves flex git kmod \
             libelf-dev libssl-dev rsync xz-utils zstd
-          # 完整内核构建占用空间较大，先移除 Actions 镜像中本任务不用的软件。
           sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet || true
           sudo apt-get clean
           df -h
@@ -54,22 +72,16 @@ jobs:
         run: |
           mkdir -p logs
           bash -o pipefail scripts/build-i915-sriov.sh init 2>&1 | tee logs/01-init.log
-
       - name: 下载 TrueNAS 内核源码
         run: bash -o pipefail scripts/build-i915-sriov.sh fetch-kernel 2>&1 | tee logs/02-fetch-kernel.log
-
       - name: 生成并验证内核配置
         run: bash -o pipefail scripts/build-i915-sriov.sh configure-kernel 2>&1 | tee logs/03-configure-kernel.log
-
       - name: 构建 vmlinux 与 Module.symvers
         run: bash -o pipefail scripts/build-i915-sriov.sh build-kernel 2>&1 | tee logs/04-build-kernel.log
-
       - name: 下载 i915 SR-IOV 源码
         run: bash -o pipefail scripts/build-i915-sriov.sh fetch-driver 2>&1 | tee logs/05-fetch-driver.log
-
       - name: 编译 i915 SR-IOV 模块
         run: bash -o pipefail scripts/build-i915-sriov.sh build-driver 2>&1 | tee logs/06-build-driver.log
-
       - name: 打包并验证模块
         run: bash -o pipefail scripts/build-i915-sriov.sh package 2>&1 | tee logs/07-package.log
 
@@ -80,7 +92,6 @@ jobs:
           path: out/
           if-no-files-found: error
           retention-days: 30
-
       - name: 上传构建日志
         if: always()
         uses: actions/upload-artifact@v4
@@ -89,3 +100,53 @@ jobs:
           path: logs/
           if-no-files-found: warn
           retention-days: 14
+
+  verify:
+    name: ③ 独立复核构建产物
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 安装复核工具
+        run: sudo apt-get update && sudo apt-get install -y kmod
+      - name: 下载模块产物
+        uses: actions/download-artifact@v4
+        with:
+          name: i915-sriov-${{ inputs.target_kernel }}
+          path: artifact
+      - name: 校验哈希与 vermagic
+        env:
+          TARGET_KERNEL: ${{ inputs.target_kernel }}
+        run: |
+          set -euo pipefail
+          cd artifact
+          sha256sum --check SHA256SUMS
+          COUNT=0
+          while IFS= read -r -d '' module; do
+            COUNT=$((COUNT + 1))
+            VERMAGIC="$(modinfo -F vermagic "$module")"
+            [[ "$VERMAGIC" == "$TARGET_KERNEL"* ]] || {
+              echo "错误：$module vermagic=$VERMAGIC" >&2
+              exit 1
+            }
+          done < <(find . -name '*.ko' -print0)
+          [[ "$COUNT" -gt 0 ]]
+          cat BUILD-INFO.txt
+
+  summary:
+    name: ④ 生成工作流摘要
+    needs: verify
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 写入摘要
+        env:
+          TRUENAS_REF: ${{ inputs.truenas_ref }}
+          TARGET_KERNEL: ${{ inputs.target_kernel }}
+          I915_REF: ${{ inputs.i915_ref }}
+        run: |
+          {
+            echo "## TrueNAS i915 SR-IOV 构建成功"
+            echo "- TrueNAS 源码：\`$TRUENAS_REF\`"
+            echo "- 目标内核：\`$TARGET_KERNEL\`"
+            echo "- i915 SR-IOV：\`$I915_REF\`"
+            echo "- 产物：\`i915-sriov-$TARGET_KERNEL\`"
+          } >> "$GITHUB_STEP_SUMMARY"
