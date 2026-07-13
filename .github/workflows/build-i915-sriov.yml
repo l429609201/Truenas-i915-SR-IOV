@@ -1,0 +1,62 @@
+name: 构建 TrueNAS i915 SR-IOV 模块
+
+on:
+  workflow_dispatch:
+    inputs:
+      truenas_ref:
+        description: TrueNAS Linux 分支或标签
+        required: true
+        default: TS-25.10.4
+      target_kernel:
+        description: 产物必须匹配的 uname -r
+        required: true
+        default: 6.12.91-production+truenas
+      i915_ref:
+        description: strongtz/i915-sriov-dkms 标签
+        required: true
+        default: 2026.03.05.1
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      TRUENAS_REF: ${{ inputs.truenas_ref }}
+      TARGET_KERNEL: ${{ inputs.target_kernel }}
+      I915_REF: ${{ inputs.i915_ref }}
+
+    steps:
+      - name: 检出构建配置
+        uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          # 优先使用 GCC 14；若 Ubuntu 镜像暂未提供，则退回其默认 GCC。
+          if apt-cache show gcc-14 >/dev/null 2>&1; then
+            sudo apt-get install -y gcc-14
+            echo "KERNEL_CC=gcc-14" >> "$GITHUB_ENV"
+          else
+            echo "KERNEL_CC=gcc" >> "$GITHUB_ENV"
+          fi
+          sudo apt-get install -y \
+            bc bison build-essential cpio dwarves flex git kmod \
+            libelf-dev libssl-dev rsync xz-utils zstd
+          # 完整内核构建占用空间较大，先移除 Actions 镜像中本任务不用的软件。
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet || true
+          sudo apt-get clean
+          df -h
+
+      - name: 构建内核符号与 SR-IOV 模块
+        run: bash scripts/build-i915-sriov.sh
+
+      - name: 上传模块产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: i915-sriov-${{ inputs.target_kernel }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
