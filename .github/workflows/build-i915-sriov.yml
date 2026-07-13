@@ -50,8 +50,28 @@ jobs:
           sudo apt-get clean
           df -h
 
-      - name: 构建内核符号与 SR-IOV 模块
-        run: bash scripts/build-i915-sriov.sh
+      - name: 初始化构建目录
+        run: |
+          mkdir -p logs
+          bash -o pipefail scripts/build-i915-sriov.sh init 2>&1 | tee logs/01-init.log
+
+      - name: 下载 TrueNAS 内核源码
+        run: bash -o pipefail scripts/build-i915-sriov.sh fetch-kernel 2>&1 | tee logs/02-fetch-kernel.log
+
+      - name: 生成并验证内核配置
+        run: bash -o pipefail scripts/build-i915-sriov.sh configure-kernel 2>&1 | tee logs/03-configure-kernel.log
+
+      - name: 构建 vmlinux 与 Module.symvers
+        run: bash -o pipefail scripts/build-i915-sriov.sh build-kernel 2>&1 | tee logs/04-build-kernel.log
+
+      - name: 下载 i915 SR-IOV 源码
+        run: bash -o pipefail scripts/build-i915-sriov.sh fetch-driver 2>&1 | tee logs/05-fetch-driver.log
+
+      - name: 编译 i915 SR-IOV 模块
+        run: bash -o pipefail scripts/build-i915-sriov.sh build-driver 2>&1 | tee logs/06-build-driver.log
+
+      - name: 打包并验证模块
+        run: bash -o pipefail scripts/build-i915-sriov.sh package 2>&1 | tee logs/07-package.log
 
       - name: 上传模块产物
         uses: actions/upload-artifact@v4
@@ -60,3 +80,12 @@ jobs:
           path: out/
           if-no-files-found: error
           retention-days: 30
+
+      - name: 上传构建日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.run_number }}
+          path: logs/
+          if-no-files-found: warn
+          retention-days: 14
